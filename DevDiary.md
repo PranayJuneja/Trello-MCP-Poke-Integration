@@ -1,34 +1,34 @@
-# A Developer's Diary: Building and Debugging a Trello MCP Server
+# A Developer's Diary: Building Trello Integration for Poke AI
 
-Hello there! If you're reading this, you're probably interested in how AI assistants like Claude can interact with real-world tools like Trello. This document is a deep-dive into our journey of building a Trello MCP server, hitting roadblocks, and ultimately getting it to work seamlessly with Cursor. We'll cover the what, the why, and every "aha!" moment we had along the way.
+Hello there! If you're reading this, you're probably interested in how we taught **Poke AI** to interact with real-world tools like Trello. This document is a deep-dive into our journey of building a Trello MCP server, hitting roadblocks, and ultimately empowering Poke AI to manage your projects seamlessly. We'll cover the what, the why, and every "aha!" moment we had along the way.
 
 ## Part 1: What in the World is an MCP Server?
 
-Imagine an AI assistant is a brilliant, multilingual chef. This chef can cook anything, but they need ingredients and tools. Now, imagine every kitchen tool (Trello, GitHub, Slack) speaks a different, obscure language. The chef would spend all their time learning languages instead of cooking.
+Imagine **Poke AI** is a brilliant, multilingual chef. This chef can cook anything, but they need ingredients and tools. Now, imagine every kitchen tool (Trello, GitHub, Slack) speaks a different, obscure language. The chef would spend all their time learning languages instead of cooking.
 
-**MCP (Model Context Protocol)** solves this. It's a standardized protocol (currently used by Claude and compatible clients) that provides a common set of instructions for AI assistants to interact with external tools. Think of it as JSON-RPC 2.0 with conventions for schemas, prompts, and tool definitions. An **MCP Server** is the specialized kitchen assistant who understands this protocol *and* knows how to operate a specific tool, like the Trello espresso machine.
+**MCP (Model Context Protocol)** solves this. It's a standardized protocol that provides a common set of instructions for AI assistants like Poke AI to interact with external tools. Think of it as JSON-RPC 2.0 with conventions for schemas, tools, and resources. An **MCP Server** is the specialized kitchen assistant who understands this protocol *and* knows how to operate a specific tool, like the Trello espresso machine.
 
-- **The AI says (in MCP):** "Hey, create a card named 'Buy milk'."
+- **Poke AI says (in MCP):** "Hey, create a card named 'Buy milk'."
 - **The MCP Server hears this, translates it, and tells Trello:** "Use your API to create a new card with the title 'Buy milk' in the 'Groceries' list."
 
-Our Trello MCP server is that specialized assistant, bridging the gap between the AI and Trello's powerful project management features.
+Our Trello MCP server is that specialized assistant, bridging the gap between Poke AI and Trello's powerful project management features.
 
 ### How Do They Talk? The "Transports"
 
 The AI and the MCP server need a way to communicate. This communication channel is called a "transport." We built our server to support two main types:
 
-1.  **`stdio` (Standard Input/Output):** Think of this as a direct, private phone line. The MCP client and server are running on the same computer and talk to each other through text streams (`stdin` for listening, `stdout` for talking). It's incredibly fast and secure, perfect when the MCP client and server run on the same machine (like in Cursor's setup), even if the AI model itself runs remotely. **This is the transport that gave us the most trouble, and we'll dive deep into why.**
+1.  **`stdio` (Standard Input/Output):** Think of this as a direct, private phone line. The MCP client and server are running on the same computer and talk to each other through text streams (`stdin` for listening, `stdout` for talking). It's incredibly fast and secure, perfect when the MCP client and server run on the same machine (like in Poke AI's setup), even if the AI model itself runs remotely. **This is the transport that gave us the most trouble, and we'll dive deep into why.**
 
 2.  **HTTP/SSE (Server-Sent Events):** This is more like a private web radio broadcast. The MCP server runs as a web server (like a website on `http://localhost:8787`), and the AI "tunes in" to a specific URL (`/mcp/sse`) to listen for messages. It's more flexible, allowing the AI and the server to be on different machines, but has slightly more overhead than `stdio`.
 
 
 ## Part 2: The Debugging Journey - From "No Tools" to a Working Server
 
-We got our server built, added it to Cursor, and saw the little green light. Success! ...Except it said "no tools or prompts." This kicked off an intricate debugging process.
+We got our server built, added it to Poke AI, and saw the little green light. Success! ...Except it said "no tools or prompts." This kicked off an intricate debugging process.
 
 ### Problem #1: The Silent Crash - "No Tools" in Cursor
 
-**The Symptom:** Cursor recognized that our server was running but reported that it had zero tools available.
+**The Symptom:** Poke AI recognized that our server was running but reported that it had zero tools available.
 
 **The Investigation:** Our first thought was that the tools weren't being registered correctly. But looking at the code in `src/mcp/registry.ts`, the registration logic was sound. So, if the code was right, maybe the server wasn't running long enough for the registration to happen?
 
@@ -42,11 +42,11 @@ This led us to the root cause: **a silent crash on startup.** The server process
 
 ### Problem #2: The Corrupted Handshake - The "[dotenv...]" JSON Error
 
-**The Symptom:** With the server running, Claude now reported a new, very specific error: `Unexpected token 'd', "[dotenv@17..." is not valid JSON`.
+**The Symptom:** With the server running, Poke AI now reported a new, very specific error: `Unexpected token 'd', "[dotenv@17..." is not valid JSON`.
 
 **The Investigation:** This was the most critical bug to solve. It taught us the single most important rule of `stdio` MCP servers.
 
-As we discussed, `stdio` is a direct text stream. The protocol has a "handshake" process. The moment the connection opens, the client (Claude/Cursor) expects the *very first thing* it reads from the server's `stdout` to be a perfectly formed JSON message.
+As we discussed, `stdio` is a direct text stream. The protocol has a "handshake" process. The moment the connection opens, the client (Poke AI) expects the *very first thing* it reads from the server's `stdout` to be a perfectly formed JSON message.
 
 Our server was outputting this instead:
 `[dotenv@17.2.1] injecting env...`
@@ -62,11 +62,11 @@ The client tried to parse `[dotenv...` as JSON, saw the `[` and then the `d`, an
 1.  **Silence `pnpm`:** We updated the `args` in our `.cursor/mcp.json` to include the `--silent` flag. This tells `pnpm` to just run the script and not print any of its own chatter.
 2.  **Redirect Debug Output:** We couldn't easily disable the dotenv-related debug messages, but we could control *where* they go. In `src/config/env.ts`, we temporarily redirected `console.log` to `console.error` right before `dotenv.config()` was called, and then restored it immediately after. Since the MCP protocol only cares about `stdout`, anything printed to `stderr` is ignored by the client and is useful for debugging.
 
-**Key Takeaway:** **STDOUT IS SACRED.** In `stdio` mode, only MCP protocol messages can ever be printed to `stdout`. All logs, banners, warnings, and debug messages *must* be sent to `stderr`. This isn't just Claude being strict—it's by design in JSON-RPC-over-stdio implementations, which follow structured framing requirements. Our logger was already correctly configured to use `stderr`, but we had to wrangle these third-party libraries to respect that rule.
+**Key Takeaway:** **STDOUT IS SACRED.** In `stdio` mode, only MCP protocol messages can ever be printed to `stdout`. All logs, banners, warnings, and debug messages *must* be sent to `stderr`. This isn't just Poke AI being strict—it's by design in JSON-RPC-over-stdio implementations, which follow structured framing requirements. Our logger was already correctly configured to use `stderr`, but we had to wrangle these third-party libraries to respect that rule.
 
 ### Problem #3: The Validation Nightmare - "keyValidator._parse is not a function"
 
-**The Symptom:** Now that our server was running and communicating properly, we hit a new class of errors. When Claude tried to call tools like `trello:list_boards` or `trello:get_board`, it would fail with the cryptic error: `keyValidator._parse is not a function`.
+**The Symptom:** Now that our server was running and communicating properly, we hit a new class of errors. When Poke AI tried to call tools like `trello:list_boards` or `trello:get_board`, it would fail with the cryptic error: `keyValidator._parse is not a function`.
 
 **The Investigation:** This error was particularly frustrating because it seemed to come from deep within the MCP SDK's validation system. We knew our tools were registered, we knew the server was running, but something in the parameter validation was fundamentally broken.
 
